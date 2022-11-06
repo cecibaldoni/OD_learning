@@ -14,8 +14,7 @@ od_data = read.csv(file = "C:/Users/cecil/Desktop/SHREW/DATA/OD_Task.csv",
                    header = TRUE, sep = ",", dec = ".", na.strings = "NA")
 #od_data = read.csv(file = "OD_Task.csv",
 #                   header = TRUE, sep = ",", dec = ".", na.strings = "NA")
-subset1 <- od_data %>%
-  select(ID, season, test_ID, success)
+
 # make winter reference category
 od_data$seasonF <- relevel(as.factor(od_data$season), ref = "winter")
 od_data$test_ID <- factor(od_data$test_ID, ordered = TRUE)
@@ -26,6 +25,9 @@ subset <- od_data %>%
   select(ID, season, seasonF, test_ID, success)
 str(subset)
 
+contrasts(od_data$test_ID, how.many=3) <- contr.poly(10)
+contrasts(od_data$test_ID)
+#if I want second order I just have linear+quadratic -> how.many=2
 
 ## which priors you can set
 get_prior(success ~ seasonF + (1|ID), 
@@ -74,10 +76,78 @@ mcmc_plot(Bayes_Model_Binary,
           prob = 0.95)
 #No significative effect
 
+#######################
+###new changes, 4/11###
+#######################
+get_prior(success ~ seasonF*test_ID + (1+test_ID|ID), 
+          #(1+test_ID|ID): individual have different trajectories, but same trajectories between seasons
+          data = od_data, family = bernoulli(link="logit"))
+
+bm_prior_new <- c(prior(normal(0,1), class = b, coef = seasonFsummer),
+                  prior(normal(0,1), class = b, coef = seasonFspring),
+                  prior(normal(0,1), class = b, coef = test_ID.C),
+                  prior(normal(0,1), class = b, coef = test_ID.L),
+                  prior(normal(0,1), class = b, coef = test_ID.Q),
+                  prior(normal(0,1), class = b, coef = seasonFspring:test_ID.C),
+                  prior(normal(0,1), class = b, coef = seasonFspring:test_ID.Q),
+                  prior(normal(0,1), class = b, coef = seasonFspring:test_ID.L),
+                  prior(normal(0,1), class = b, coef = seasonFsummer:test_ID.C),
+                  prior(normal(0,1), class = b, coef = seasonFsummer:test_ID.L),
+                  prior(normal(0,1), class = b, coef = seasonFsummer:test_ID.Q),
+                  prior(exponential(1), class = sd))
+prior1 <- get_prior(success ~ seasonF*test_ID + (1+test_ID|ID), 
+                   data = od_data, family = bernoulli(link="logit"))
+make_stancode(success ~ seasonF*test_ID + (1+test_ID|ID), 
+              data = od_data, family = bernoulli(link="logit"), prior = bm_prior_new)
+
+Bayes_Model_Binary_new <- brm(formula = success ~ seasonF*test_ID + (1+seasonF*test_ID|ID), 
+                              data = od_data, family = bernoulli(link="logit"), 
+                              warmup = 500, iter = 2000, chains = 4, #thin = 10, 
+                              cores = 4, 
+                              prior = bm_prior_new)
+#try fix prior with the ones we modified (brm_prior_new) DONE
+
+Bayes_Model_Binary_new
+#seasonFsummer               0.74      0.36     0.05     1.47 1.00     7253     4239
+#upper and lower levels are on one side of the 0, so positive effect of season to success
+
+#Test_ID.L ID.Q ID.C are of winter (intercept)
+#everything else underneath are the adjustments to the winter effects (e.g. seasonFspring:testid 1.70 = -0.93+1.70)
+
+#(1+test_ID|ID) individual have different trajectories, but same trajectoriesbetween seasons
+#(1+seasonF*test_ID|ID) individuals have different trajectories, and i expect different trajectories per ID per season.
+
+#make plot with average trend and each shrew trend per season
+
+library(magrittr)
+library(dplyr)
+library(purrr)
+library(forcats)
+library(tidyr)
+library(modelr)
+library(ggdist)
+library(tidybayes)
+library(ggplot2)
+library(cowplot)
+library(rstan)
+library(brms)
+library(ggrepel)
+library(RColorBrewer)
+library(gganimate)
+library(posterior)
+theme_set(theme_tidybayes() + panel_border())
+
+get_variables(Bayes_Model_Binary_new)
+
+Bayes_Model_Binary_new %>% 
+  spread_draws(r_ID[20210802-1,Intercept]) %>% 
+  head(10)
+
+
 # hypothesis testing 
-h1 <- hypothesis(Bayes_Model_Binary, c("seasonFsummer > 0", "seasonFsummer <0" ))
+h1 <- hypothesis(Bayes_Model_Binary_new, c("seasonFsummer > 0", "seasonFsummer <0" ))
 print(h1,digits = 3)
-cond_eff <- conditional_effects(Bayes_Model_Binary)
+cond_eff <- conditional_effects(Bayes_Model_Binary_new)
 
   
 df <- as.data.frame(cond_eff$seasonF)
@@ -121,7 +191,7 @@ subset$success <- as.numeric(subset$success)
 subset$season <- as.factor(subset$season)
 
 
-plot2 <- ggplot(subset, aes(x = as.numeric(test_ID), y = success, color = season)) +
+plot2 <- ggplot(od_data, aes(x = as.numeric(test_ID), y = success, color = season)) +
   geom_jitter(width =  0.05, height = 0.05) + 
   geom_smooth(mapping = aes(x = as.numeric(test_ID), y = success), ) + 
   labs(x = "Trial", y = "Success rate") +
@@ -146,9 +216,9 @@ Bayes_Model_Prop <- brm(success | trials(250) ~ season,
                         data = subset,
                         family = binomial(link = "logit"),
                         warmup = 500,
-                        iter = 20000,
+                        iter = 2000,
                         chains = 4,
-                        thin = 10,
+                        #thin = 10,
                         cores = 4)
 
 mcmc_plot(Bayes_Model_Prop,
